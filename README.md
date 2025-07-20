@@ -58,7 +58,7 @@ Ubuntu Server上で動作するMinecraft Forge 1.20.1サーバーの状態をWeb
 - **Node.js 18+ + TypeScript**: 型安全性とスケーラビリティを確保
 - **Express.js**: RESTful API + WebSocket
 - **Socket.io**: リアルタイム双方向通信
-- **Prisma + SQLite**: 型安全なORM、本番はPostgreSQL対応
+- **Prisma + MySQL**: 型安全なORM、高性能DB（開発時はSQLiteも選択可）
 - **minecraft-server-util**: Minecraftサーバーとの通信
 - **RCON接続**: コマンド実行、TPS取得
 - **JWT認証**: 管理機能のセキュリティ
@@ -99,7 +99,7 @@ npm init -y
 
 # バックエンド依存関係（本格的）
 npm install express socket.io minecraft-server-util prisma @prisma/client
-npm install cors dotenv jsonwebtoken bcryptjs rcon
+npm install cors dotenv jsonwebtoken bcryptjs rcon mysql2
 npm install -D typescript @types/node @types/express @types/jsonwebtoken
 npm install -D nodemon ts-node @types/cors prisma
 
@@ -163,8 +163,12 @@ MINECRAFT_RCON_HOST=localhost
 MINECRAFT_RCON_PORT=25575
 MINECRAFT_RCON_PASSWORD=your_rcon_password
 
-# データベース
+# データベース設定
+# 開発環境（SQLite）
 DATABASE_URL="file:./dev.db"
+
+# 本番環境（MySQL）
+# DATABASE_URL="mysql://username:password@localhost:3306/minecraft_monitor"
 
 # JWT認証
 JWT_SECRET=your_jwt_secret_key
@@ -185,26 +189,33 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "mysql"      // 本番用: MySQL
+  // provider = "sqlite"  // 開発用: SQLite（コメントアウト）
   url      = env("DATABASE_URL")
 }
 
 model Server {
   id        Int      @id @default(autoincrement())
-  name      String
-  host      String
+  name      String   @db.VarChar(255)
+  host      String   @db.VarChar(255)
   port      Int
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  
+  @@map("servers")
 }
 
 model Player {
-  id       Int      @id @default(autoincrement())
-  uuid     String   @unique
-  name     String
+  id        Int      @id @default(autoincrement())
+  uuid      String   @unique @db.VarChar(36)
+  name      String   @db.VarChar(16)
   firstSeen DateTime @default(now())
   lastSeen  DateTime @default(now())
+  
+  @@map("players")
+  @@index([uuid])
+  @@index([name])
 }
 
 model ServerStatus {
@@ -212,31 +223,76 @@ model ServerStatus {
   online       Boolean
   playerCount  Int
   maxPlayers   Int
-  tps          Float?
-  cpu          Float?
-  memory       Float?
+  tps          Float?   @db.Float
+  cpu          Float?   @db.Float
+  memory       Float?   @db.Float
   timestamp    DateTime @default(now())
+  
+  @@map("server_status")
+  @@index([timestamp])
 }
 
 model Maintenance {
   id          Int      @id @default(autoincrement())
-  title       String
-  description String?
+  title       String   @db.VarChar(255)
+  description String?  @db.Text
   startTime   DateTime
   endTime     DateTime?
   isActive    Boolean  @default(false)
   createdAt   DateTime @default(now())
+  
+  @@map("maintenance")
+  @@index([startTime])
+  @@index([isActive])
 }
+```
+
+### MySQL データベースセットアップ
+
+#### ローカル開発環境
+```bash
+# MySQL インストール（Ubuntu）
+sudo apt update
+sudo apt install mysql-server
+
+# MySQL セキュリティ設定
+sudo mysql_secure_installation
+
+# データベース作成
+sudo mysql -u root -p
+CREATE DATABASE minecraft_monitor;
+CREATE USER 'mcmonitor'@'localhost' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON minecraft_monitor.* TO 'mcmonitor'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+```
+
+#### Windows開発環境
+```bash
+# MySQL インストール
+# https://dev.mysql.com/downloads/mysql/ からダウンロード
+
+# または XAMPP/MAMP を使用
+# phpMyAdmin でデータベース作成: minecraft_monitor
 ```
 
 ### 開発サーバーの起動
 ```bash
-# バックエンド起動（開発モード）
+# データベース初期化（初回のみ）
 cd server
+
+# SQLite使用の場合
+npx prisma db push
+
+# MySQL使用の場合
+npx prisma migrate dev --name init
+npx prisma generate
+
+# バックエンド起動（開発モード）
 npm run dev
 
 # フロントエンド起動（シンプル版）
-cd public
+cd ../public
 npx serve . -p 3000
 ```
 
@@ -410,13 +466,36 @@ cd minecraft-monitor/server
 cp .env.example .env
 nano .env
 
-# .env ファイル内容
+# .env ファイル内容（本番環境）
 PORT=5000
 NODE_ENV=production
 MINECRAFT_HOST=localhost
 MINECRAFT_PORT=25565
-DATABASE_URL="file:./production.db"
+DATABASE_URL="mysql://mcmonitor:your_password@localhost:3306/minecraft_monitor"
 CORS_ORIGIN=http://minecraft-monitor.yourdomain.com:5000
+```
+
+### MySQL 本番環境セットアップ
+```bash
+# MySQL インストール
+sudo apt update
+sudo apt install mysql-server
+
+# セキュリティ設定
+sudo mysql_secure_installation
+
+# データベースとユーザー作成
+sudo mysql -u root -p
+CREATE DATABASE minecraft_monitor;
+CREATE USER 'mcmonitor'@'localhost' IDENTIFIED BY 'strong_password_here';
+GRANT ALL PRIVILEGES ON minecraft_monitor.* TO 'mcmonitor'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+
+# マイグレーション実行
+cd minecraft-monitor/server
+npx prisma migrate deploy
+npx prisma generate
 ```
 
 ### セキュリティ設定（最低限）
@@ -539,7 +618,7 @@ sudo dpkg-reconfigure unattended-upgrades
 mkdir minecraft-monitor && cd minecraft-monitor
 mkdir server && cd server
 npm init -y
-npm install express socket.io minecraft-server-util prisma @prisma/client cors dotenv
+npm install express socket.io minecraft-server-util prisma @prisma/client cors dotenv mysql2
 npm install -D typescript @types/node @types/express nodemon ts-node
 npx tsc --init
 npx prisma init
@@ -773,8 +852,13 @@ server.listen(process.env.PORT || 5000, () => {
 
 #### 4. 起動と確認
 ```bash
+# MySQL データベース作成（初回のみ）
+# mysql -u root -p
+# CREATE DATABASE minecraft_monitor;
+
 # データベース初期化
-npx prisma db push
+npx prisma migrate dev --name init
+npx prisma generate
 
 # サーバー起動
 npm run dev
